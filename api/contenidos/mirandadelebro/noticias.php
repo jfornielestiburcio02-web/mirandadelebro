@@ -1,4 +1,3 @@
-
 <?php
 // ══════════════════════════════════════════════════════════
 //  CONFIGURACIÓN FIREBASE — oculta en el servidor PHP
@@ -11,7 +10,17 @@ define('FB_URL',        'https://firestore.googleapis.com/v1/projects/' . FB_PRO
 //  ENDPOINT AJAX — si llega ?ajax=1 respondemos JSON y salimos
 // ══════════════════════════════════════════════════════════
 if (isset($_GET['ajax'])) {
+    // Evitar que errores PHP rompan el JSON
+    @ini_set('display_errors', '0');
+    error_reporting(0);
     header('Content-Type: application/json; charset=utf-8');
+
+    // Comprobar que curl está disponible
+    if (!function_exists('curl_init')) {
+        http_response_code(500);
+        echo json_encode(['error' => 'curl no está habilitado en este servidor PHP']);
+        exit;
+    }
 
     $id = trim($_GET['id'] ?? '');
     $url = $id !== ''
@@ -22,6 +31,8 @@ if (isset($_GET['ajax'])) {
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT        => 10,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_HTTPHEADER     => ['Accept: application/json'],
     ]);
     $body = curl_exec($ch);
@@ -29,8 +40,14 @@ if (isset($_GET['ajax'])) {
     $err  = curl_error($ch);
     curl_close($ch);
 
-    if ($err)       { http_response_code(502); echo json_encode(['error' => $err]); exit; }
-    if ($code !== 200) { http_response_code($code); echo $body; exit; }
+    if ($err)          { http_response_code(502); echo json_encode(['error' => 'curl: ' . $err]); exit; }
+    if ($body === false){ http_response_code(502); echo json_encode(['error' => 'Sin respuesta de Firestore']); exit; }
+    if ($code !== 200) {
+        http_response_code($code);
+        $decoded = json_decode($body, true);
+        echo json_encode(['error' => 'Firestore HTTP ' . $code, 'detalle' => $decoded]);
+        exit;
+    }
 
     $data = json_decode($body, true);
 
@@ -273,16 +290,23 @@ function parrafos(txt) {
 
 async function cargar() {
   try {
-    const r = await fetch(API + '?ajax=1');
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || 'Error');
+    const r    = await fetch(API + '?ajax=1');
+    const text = await r.text();
+    let j;
+    try { j = JSON.parse(text); }
+    catch(_) {
+      // PHP devolvió HTML de error — mostrar los primeros 300 chars para depurar
+      throw new Error('El servidor no devolvió JSON válido. Respuesta: ' + text.slice(0,300));
+    }
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     todas = j.noticias || [];
     renderLista(todas);
     const id = new URLSearchParams(location.search).get('id');
     if (id) abrirDetalle(id);
   } catch(e) {
     document.getElementById('grid').innerHTML =
-      `<div class="estado"><p>⚠️ No se pudieron cargar las noticias.<br><small>${e.message}</small></p></div>`;
+      `<div class="estado"><p>⚠️ No se pudieron cargar las noticias.</p>
+       <pre style="text-align:left;background:#f4f4f4;padding:12px;font-size:.72rem;margin-top:12px;overflow:auto;max-height:200px;white-space:pre-wrap">${e.message}</pre></div>`;
   }
 }
 
